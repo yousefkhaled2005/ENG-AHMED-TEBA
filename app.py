@@ -331,32 +331,57 @@ def generate_balanced_exam(all_data_df, total):
 #  🖥️ واجهة المستخدم
 # =========================================================
 
-# 1. الهيدر المخصص
-st.markdown("""
-<div class="header-container">
-    <div class="header-title">منصة المهندس أحمد</div>
-    <div class="header-subtitle">جامعة طيبة - كلية الهندسة</div>
-</div>
-""", unsafe_allow_html=True)
+# =========================================================
+#  🖥️ الواجهة الرئيسية (Main UI)
+# =========================================================
 
-# 2. العمود الجانبي (للسجل والتعليمات)
+# هيدر مخصص يعرض اللوجو (يمين) والعناوين (يسار)
+col_logo, col_text = st.columns([1, 4])
+
+with col_logo:
+    # محاولة عرض اللوجو (سواء jpg أو png)
+    if os.path.exists("logo.jpg"):
+        st.image("logo.jpg", use_container_width=True)
+    elif os.path.exists("logo.png"):
+        st.image("logo.png", use_container_width=True)
+    else:
+        st.markdown("📷 *اللوجو*") 
+
+with col_text:
+    st.markdown("""
+        <div style="text-align: right; direction: rtl; padding-right: 20px;">
+            <h1 style="color: #2c3e50; margin-bottom: 0;">منصة المهندس أحمد</h1>
+            <h3 style="color: #555; margin-top: 5px;">معهد طيبة العالي للتدريب</h3>
+        </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("---")
+
+# --- القائمة الجانبية (Sidebar) ---
 with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=100) # أيقونة تعبيرية
+    st.image("https://cdn-icons-png.flaticon.com/512/3135/3135715.png", width=80)
     st.title("لوحة التحكم")
     st.markdown("---")
+    
     st.subheader(">_ سجل العمليات")
     log_placeholder = st.empty()
-    if 'logs' not in st.session_state: st.session_state.logs = ["System Ready..."]
+    
+    # التأكد من وجود المتغير في الذاكرة
+    if 'logs' not in st.session_state: 
+        st.session_state.logs = ["النظام جاهز..."]
     
     def log(msg):
-        st.session_state.logs.append(f"> {msg}")
-        if len(st.session_state.logs) > 15: st.session_state.logs.pop(0)
+        st.session_state.logs.append(f"⏱ {msg}")
+        # الاحتفاظ بآخر 15 عملية فقط
+        if len(st.session_state.logs) > 15: 
+            st.session_state.logs.pop(0)
         log_txt = "\n".join(st.session_state.logs)
+        # عرض السجل داخل مربع أسود
         log_placeholder.markdown(f'<div class="log-container"><pre>{log_txt}</pre></div>', unsafe_allow_html=True)
         time.sleep(0.05)
     
     st.info("نظام ذكي لتوليد الاختبارات المتوازنة من ملفات الإكسل مباشرة.")
-
+    
 # 3. المنطقة الرئيسية
 st.subheader("1️⃣ رفع بنوك الأسئلة")
 uploaded_banks = st.file_uploader(
@@ -473,4 +498,5 @@ if start_btn:
                 
         except Exception as e:
             st.error(f"حدث خطأ غير متوقع: {e}")
+
             log(f"Error: {str(e)}")
