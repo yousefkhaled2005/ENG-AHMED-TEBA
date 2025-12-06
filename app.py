@@ -5,16 +5,17 @@ import openpyxl
 import random
 import io
 import zipfile
-import gc
+import gc  # Garbage Collector for memory management
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from collections import Counter
 import time
 
 # =========================================================
-#  🎨 تحسين الواجهة والتصميم (UI/UX)
+# 🎨 1. تحسين الواجهة والتصميم (من الكود الأول - منصة المهندس أحمد)
 # =========================================================
 st.set_page_config(
     page_title="منصة المهندس أحمد - جامعة طيبة",
@@ -23,7 +24,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS محسن جداً للتصميم
+# CSS محسن جداً للتصميم (الأخضر والذهبي)
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap');
@@ -100,22 +101,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-#  🧠 منطق الألوان المتقدم (High Accuracy Color Logic)
-# =========================================================
-
-def is_cell_highlighted(cell):
-    if not cell.fill or not cell.fill.start_color: return False
-    color = cell.fill.start_color
-    if color.type == 'rgb':
-        if color.rgb in [None, '00000000', 'FFFFFFFF']: return False
-        return True
-    elif color.type == 'theme': return True
-    elif color.type == 'indexed':
-        if color.indexed != 64: return True
-    return False
-
-# =========================================================
-#  🔧 دوال المعالجة (Core Logic)
+# 🔧 2. منطق المعالجة (من الكود الثاني - Logic Copy Paste)
 # =========================================================
 
 def normalize_text(text):
@@ -138,7 +124,7 @@ def force_align_options(options, correct_text, target_idx):
     else: final_opts[target_idx] = correct_text
     return final_opts
 
-# --- Word Formatting ---
+# --- Word Formatting Logic (From Code 2) ---
 def set_section_rtl_and_margins(section):
     sectPr = section._sectPr
     if not sectPr.find(qn('w:bidi')):
@@ -189,17 +175,19 @@ def add_question_block(doc, q_num, q_text, options):
         run_opt = opt_p.add_run(f"{lbl}. {opt_text}"); force_font(run_opt, size=14, is_bold=False)
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-# --- File Readers ---
+# --- File Readers (From Code 2) ---
 
 def _read_xls_questions(file_obj):
     try:
         content = file_obj.read()
         book = xlrd.open_workbook(file_contents=content, formatting_info=True)
     except: return pd.DataFrame()
+    
     sh = None
     for n in book.sheet_names():
         if 'بنك' in n or 'اسئله' in normalize_text(n): sh = book.sheet_by_name(n); break
     if not sh: sh = book.sheet_by_index(0)
+    
     hr = -1; cols = {'u': -1, 'q': -1, 'obj': -1}
     for r in range(min(20, sh.nrows)):
         vs = [normalize_text(sh.cell_value(r, c)) for c in range(sh.ncols)]
@@ -211,9 +199,11 @@ def _read_xls_questions(file_obj):
                 elif 'هدف' in v: cols['obj'] = c
             break
     if hr == -1: return pd.DataFrame()
+    
     start_opt = min(cols['u'], cols['q']) + 1; end_opt = max(cols['u'], cols['q'])
     opt_cols = list(range(start_opt, end_opt))
     data = []
+    
     for r in range(hr+1, sh.nrows):
         u = normalize_text(sh.cell_value(r, cols['u']))
         q = str(sh.cell_value(r, cols['q'])).strip()
@@ -226,15 +216,21 @@ def _read_xls_questions(file_obj):
                 val = str(sh.cell_value(r, ci)).strip()
                 clr = book.xf_list[sh.cell_xf_index(r, ci)].background.pattern_colour_index
                 o_txt.append(val); o_clr.append(clr)
-        corr = ""; v_idx = [i for i,x in enumerate(o_txt) if x]
+        
+        corr = ""; v_idx = [i for i,x in enumerate(o_txt) if x]; v_clr = [o_clr[i] for i in v_idx]
         ci = -1
-        for i in v_idx:
-            if o_clr[i] != 64: ci = i; break
+        if v_clr:
+            cnt = Counter(v_clr); uniq = next((k for k,v in cnt.items() if v==1), None)
+            if uniq: 
+                for i in v_idx: 
+                    if o_clr[i] == uniq: ci=i; break
+            else: 
+                for i in v_idx: 
+                    if o_clr[i]!=64: ci=i; break
         if ci != -1: corr = o_txt[ci]
         real_opts = [x for x in o_txt if x]
         if real_opts and corr:
             data.append({'category': cat, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
-    del book
     return pd.DataFrame(data)
 
 def _read_xlsx_questions(file_obj):
@@ -253,9 +249,11 @@ def _read_xlsx_questions(file_obj):
                 elif 'هدف' in v: cols['obj'] = c_idx
             break
     if hr == -1: return pd.DataFrame()
+
     start_opt = min(cols['u'], cols['q']) + 1; end_opt = max(cols['u'], cols['q'])
     opt_cols = list(range(start_opt, end_opt))
     data = []
+
     for row in rows[hr+1:]:
         try:
             u = normalize_text(row[cols['u']].value)
@@ -264,31 +262,41 @@ def _read_xlsx_questions(file_obj):
         cat = u
         if cols['obj'] != -1 and cols['obj'] < len(row): cat += str(row[cols['obj']].value)
         if not u or not q: continue
+
         o_txt = []; o_is_colored = []
         for ci in opt_cols:
             if ci < len(row):
                 cell = row[ci]
                 val = str(cell.value if cell.value else "").strip()
-                is_colored = is_cell_highlighted(cell)
+                is_colored = False
+                if cell.fill and cell.fill.start_color:
+                    if cell.fill.start_color.type == 'rgb' and cell.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_colored = True
+                    elif cell.fill.start_color.type == 'theme': is_colored = True
                 o_txt.append(val); o_is_colored.append(is_colored)
+        
         corr = ""
         valid_indices = [i for i, txt in enumerate(o_txt) if txt]
+        found_idx = -1
         for i in valid_indices:
-            if o_is_colored[i]: corr = o_txt[i]; break
+            if o_is_colored[i]: found_idx = i; break
+        if found_idx != -1: corr = o_txt[found_idx]
         real_opts = [x for x in o_txt if x]
         if real_opts and corr:
             data.append({'category': cat, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
-    del wb; del rows
     return pd.DataFrame(data)
 
 def fetch_smart_questions(uploaded_file):
+    # Reset file pointer
     uploaded_file.seek(0)
-    if uploaded_file.name.lower().endswith('.xls'): return _read_xls_questions(uploaded_file)
-    elif uploaded_file.name.lower().endswith('.xlsx'): return _read_xlsx_questions(uploaded_file)
+    if uploaded_file.name.lower().endswith('.xls'):
+        return _read_xls_questions(uploaded_file)
+    elif uploaded_file.name.lower().endswith('.xlsx'):
+        return _read_xlsx_questions(uploaded_file)
     return pd.DataFrame()
 
 def get_master_pattern_from_file(uploaded_file, limit=30):
-    if uploaded_file is None: return [random.randint(0,3) for _ in range(limit)]
+    if uploaded_file is None:
+        return [random.randint(0,3) for _ in range(limit)]
     try:
         uploaded_file.seek(0)
         wb = openpyxl.load_workbook(uploaded_file, data_only=False)
@@ -297,18 +305,21 @@ def get_master_pattern_from_file(uploaded_file, limit=30):
         for row in sheet.iter_rows():
             found_in_row = -1
             for cell in row:
-                if is_cell_highlighted(cell) and cell.value:
+                is_colored = False
+                if cell.fill and cell.fill.start_color:
+                    if cell.fill.start_color.type == 'rgb' and cell.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_colored = True
+                    elif cell.fill.start_color.type == 'theme': is_colored = True
+                if is_colored and cell.value:
                     txt = str(cell.value).strip()
                     if 'أ' in txt or 'ا' in txt: found_in_row = 0
                     elif 'ب' in txt: found_in_row = 1
                     elif 'ج' in txt: found_in_row = 2
                     elif 'د' in txt: found_in_row = 3
                     if found_in_row != -1: pattern.append(found_in_row); break
-            if found_in_row == -1: pattern.append(random.randint(0,3))
         while len(pattern) < limit: pattern.append(random.randint(0,3))
-        del wb
         return pattern
-    except: return [random.randint(0,3) for _ in range(limit)]
+    except:
+        return [random.randint(0,3) for _ in range(limit)]
 
 def generate_balanced_exam(all_data_df, total):
     if all_data_df.empty: return pd.DataFrame()
@@ -328,7 +339,7 @@ def generate_balanced_exam(all_data_df, total):
     return res.sample(frac=1).reset_index(drop=True)
 
 # =========================================================
-#  🖥️ واجهة المستخدم
+# 🖥️ 3. واجهة المستخدم (تطبيق الهيكل من الكود الأول)
 # =========================================================
 
 # 1. الهيدر المخصص
@@ -396,6 +407,9 @@ with c_btn:
     start_btn = st.button("🚀 بدء توليد الاختبارات", use_container_width=True)
 
 if start_btn:
+    # تنظيف الذاكرة المبدئي
+    gc.collect()
+    
     if not uploaded_banks:
         st.error("⚠️ خطأ: يجب رفع بنك أسئلة واحد على الأقل.")
     else:
@@ -410,7 +424,8 @@ if start_btn:
                 log(f"جاري قراءة الملف: {f.name}")
                 df = fetch_smart_questions(f)
                 if not df.empty: all_dfs.append(df)
-                progress_bar.progress((i + 1) / (total_files * 2)) # Progress update
+                progress_bar.progress((i + 1) / (total_files * 2)) 
+                # !!! مسح الكاش والذاكرة فوراً لعدم استهلاك الرام مع تعدد المستخدمين !!!
                 gc.collect()
             
             if not all_dfs:
@@ -418,6 +433,10 @@ if start_btn:
             else:
                 BIG_DF = pd.concat(all_dfs).reset_index(drop=True)
                 log(f"تم استخراج {len(BIG_DF)} سؤال بنجاح.")
+                
+                # حذف الداتا فريمز القديمة من الذاكرة
+                del all_dfs
+                gc.collect()
                 
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -455,7 +474,10 @@ if start_btn:
                         zip_path = f"{inputs['folder']}/{m_name}.docx"
                         zf.writestr(zip_path, doc_io.getvalue())
                         
-                        del doc; del doc_io; gc.collect()
+                        # !!! تنظيف الذاكرة بعد كل نموذج !!!
+                        del doc; del doc_io; del exam_df
+                        gc.collect()
+                        
                         progress_bar.progress(0.5 + ((idx + 1) / (total_models * 2)))
                 
                 progress_bar.progress(100)
@@ -470,6 +492,10 @@ if start_btn:
                     mime="application/zip",
                     use_container_width=True
                 )
+                
+                # !!! تنظيف نهائي للذاكرة !!!
+                del BIG_DF; del zip_buffer
+                gc.collect()
                 
         except Exception as e:
             st.error(f"حدث خطأ غير متوقع: {e}")
