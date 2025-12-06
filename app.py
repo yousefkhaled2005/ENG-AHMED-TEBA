@@ -12,6 +12,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import time
+import os
 
 # =========================================================
 #  🎨 تحسين الواجهة والتصميم (UI/UX)
@@ -500,3 +501,4 @@ if start_btn:
             st.error(f"حدث خطأ غير متوقع: {e}")
 
             log(f"Error: {str(e)}")
+
