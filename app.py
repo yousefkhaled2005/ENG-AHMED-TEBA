@@ -15,7 +15,7 @@ from collections import Counter
 import time
 
 # =========================================================
-# 🎨 تحسين الواجهة والتصميم
+# 🎨 واجهة المستخدم (التصميم)
 # =========================================================
 st.set_page_config(
     page_title="منصة المهندس أحمد - جامعة طيبة",
@@ -78,13 +78,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 🔧 دوال المعالجة (Logic) - تعديل خاص لملفك
+# 🔧 دوال المعالجة (المنطق المعدل)
 # =========================================================
 
 def normalize_text(text):
     if text is None: return ""
     text = str(text).strip()
-    return text.replace('ة', 'ه').replace('ى', 'ي').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ؤ', 'و')
+    # توحيد الأحرف لضمان التطابق
+    return text.replace('ة', 'ه').replace('ى', 'ي').replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا').replace('ؤ', 'و').replace('ئ', 'ي')
 
 def clean_for_comp(text): return normalize_text(text).replace(" ", "")
 
@@ -152,31 +153,33 @@ def add_question_block(doc, q_num, q_text, options):
         run_opt = opt_p.add_run(f"{lbl}. {opt_text}"); force_font(run_opt, size=14, is_bold=False)
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-# --- Logic to Detect Colors in YOUR File ---
-def is_cell_green_or_colored(cell):
+# --- منطق كشف الألوان (معدل لصورك) ---
+def is_cell_colored(cell):
     """
-    Check if cell has ANY fill that is not standard white/transparent.
-    This works best for your sheet where only the answer is green.
+    يفحص إذا كانت الخلية ملونة بأي لون (غير الأبيض والشفاف).
     """
     if not cell.fill or not cell.fill.start_color:
         return False
     
     c = cell.fill.start_color
     
-    # 1. Check RGB (00000000 and FFFFFFFF are usually transparency/white)
+    # RGB check: 00000000 is Transparent, FFFFFFFF is White
     if c.type == 'rgb':
         if str(c.rgb).upper() in ['00000000', 'FFFFFFFF', 'NONE']:
             return False
-        return True # Any other RGB is a color
+        return True 
         
-    # 2. Check Theme
+    # Theme check: Theme 0/1 are usually White/Black backgrounds
     if c.type == 'theme':
-        # Usually Theme 0 is Light/White, Theme 1 is Dark/Black.
-        # If theme is NOT 0/1, or if it has a tint, it's likely your Green.
         if c.theme in [0, 1] and (c.tint == 0.0):
             return False
         return True
         
+    # Indexed check: 64 is typically auto/white
+    if c.type == 'indexed':
+        if c.indexed == 64: return False
+        return True
+
     return False
 
 def _read_xlsx_questions(file_obj):
@@ -187,21 +190,25 @@ def _read_xlsx_questions(file_obj):
     rows = list(sh.iter_rows())
     hr = -1; cols = {'u': -1, 'q': -1}
     
-    # Header Detection (Extended search for your file structure)
+    # 1. البحث عن الهيدر (معدل للبحث عن 'سؤال' و 'سوال')
+    # نبحث في أول 30 صف
     for r_idx, row in enumerate(rows[:30]): 
         vs = [normalize_text(cell.value) for cell in row]
-        if any('سؤال' in x for x in vs) and any('وحده' in x for x in vs):
+        
+        # الكلمات المفتاحية المحتملة
+        has_q = any(x in vs for x in ['سؤال', 'سوال', 'السؤال', 'السوال'])
+        has_u = any(x in vs for x in ['وحده', 'وحدة', 'الوحده', 'الوحدة'])
+        
+        if has_q and has_u:
             hr = r_idx
             for c_idx, v in enumerate(vs):
-                if 'وحده' in v: cols['u'] = c_idx
-                elif 'سؤال' in v: cols['q'] = c_idx
+                if v in ['وحده', 'وحدة', 'الوحده', 'الوحدة']: cols['u'] = c_idx
+                elif v in ['سؤال', 'سوال', 'السؤال', 'السوال']: cols['q'] = c_idx
             break
             
     if hr == -1: return pd.DataFrame()
 
-    # Determine Options Range (Between Unit and Question based on your image)
-    # Your image shows Unit is far left (Col N?), Question is right (Col H?).
-    # So options are BETWEEN them.
+    # تحديد أعمدة الاختيارات (بين السؤال والوحدة)
     idx1 = cols['u']
     idx2 = cols['q']
     start_opt = min(idx1, idx2) + 1
@@ -215,17 +222,16 @@ def _read_xlsx_questions(file_obj):
             u_val = row[cols['u']].value
             q_val = row[cols['q']].value
             
-            # Skip rows that are sub-headers (like "الهدف التفصيلي")
-            # If Question cell is empty, it's likely a separator row
+            # تجاهل الصفوف الفارغة أو العناوين الفرعية التي لا تحتوي على سؤال حقيقي
             if not q_val: continue
             
             u = normalize_text(u_val)
             q = str(q_val).strip()
+            # شرط إضافي: السؤال يجب أن يكون طويلاً نوعاً ما (أكثر من حرفين) لتجاهل الأرقام أو الرموز
+            if len(q) < 2: continue
+
         except IndexError: continue
         
-        # In your sheet, sub-headers exist in the "Unit" column sometimes
-        if not q or len(q) < 3: continue 
-
         o_txt = []
         corr = ""
         
@@ -234,14 +240,13 @@ def _read_xlsx_questions(file_obj):
                 cell = row[ci]
                 val = str(cell.value if cell.value else "").strip()
                 
-                if val: # Only if cell has text
+                if val: # إذا كانت الخلية تحتوي على نص
                     o_txt.append(val)
-                    # Check if THIS cell is the green one
-                    if is_cell_green_or_colored(cell):
+                    # إذا كانت الخلية ملونة، فهي الإجابة الصحيحة
+                    if is_cell_colored(cell):
                         corr = val
         
-        # Fallback: If no color detected, but we have text, skip (to be safe)
-        # Or you could default to first option if you prefer.
+        # تجميع البيانات
         real_opts = [x for x in o_txt if x]
         if real_opts and corr:
             data.append({'category': u, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
@@ -249,7 +254,6 @@ def _read_xlsx_questions(file_obj):
     return pd.DataFrame(data)
 
 def _read_xls_questions(file_obj):
-    # XLS logic is simpler (old format handles colors differently)
     try:
         content = file_obj.read()
         book = xlrd.open_workbook(file_contents=content, formatting_info=True)
@@ -263,12 +267,16 @@ def _read_xls_questions(file_obj):
     hr = -1; cols = {'u': -1, 'q': -1}
     for r in range(min(30, sh.nrows)):
         vs = [normalize_text(sh.cell_value(r, c)) for c in range(sh.ncols)]
-        if any('سؤال' in x for x in vs) and any('وحده' in x for x in vs):
+        has_q = any(x in vs for x in ['سؤال', 'سوال', 'السؤال', 'السوال'])
+        has_u = any(x in vs for x in ['وحده', 'وحدة', 'الوحده', 'الوحدة'])
+        
+        if has_q and has_u:
             hr = r
             for c, v in enumerate(vs):
-                if 'وحده' in v: cols['u'] = c
-                elif 'سؤال' in v: cols['q'] = c
+                if v in ['وحده', 'وحدة', 'الوحده', 'الوحدة']: cols['u'] = c
+                elif v in ['سؤال', 'سوال', 'السؤال', 'السوال']: cols['q'] = c
             break
+
     if hr == -1: return pd.DataFrame()
     
     start_opt = min(cols['u'], cols['q']) + 1; end_opt = max(cols['u'], cols['q'])
@@ -278,7 +286,7 @@ def _read_xls_questions(file_obj):
     for r in range(hr+1, sh.nrows):
         u = normalize_text(sh.cell_value(r, cols['u']))
         q = str(sh.cell_value(r, cols['q'])).strip()
-        if not q: continue
+        if not q or len(q) < 2: continue
         
         o_txt = []; o_clr = []
         for ci in opt_cols:
@@ -288,7 +296,7 @@ def _read_xls_questions(file_obj):
                 o_txt.append(val); o_clr.append(clr)
         
         corr = ""
-        # In XLS, 64 is typically "Auto/White". Anything else is colored.
+        # 64 is automatic/white in XLS
         for i, val in enumerate(o_txt):
             if val and o_clr[i] != 64:
                 corr = val; break
@@ -313,16 +321,15 @@ def get_master_pattern_from_file(uploaded_file, limit=30):
         pattern = []
         for row in sheet.iter_rows():
             for i, cell in enumerate(row):
-                if is_cell_green_or_colored(cell) and cell.value:
+                if is_cell_colored(cell) and cell.value:
                     txt = str(cell.value).strip()
                     if 'أ' in txt or 'ا' in txt: pattern.append(0)
                     elif 'ب' in txt: pattern.append(1)
                     elif 'ج' in txt: pattern.append(2)
                     elif 'د' in txt: pattern.append(3)
-                    else: pattern.append(random.randint(0,3)) # Found color but text unclear
+                    else: pattern.append(random.randint(0,3))
                     break
             else:
-                # If loop finishes without break, random
                 if len(pattern) < limit: pattern.append(random.randint(0,3))
             
             if len(pattern) >= limit: break
@@ -349,7 +356,7 @@ def generate_balanced_exam(all_data_df, total):
     return res.sample(frac=1).reset_index(drop=True)
 
 # =========================================================
-# 🖥️ واجهة المستخدم
+# 🖥️ لوحة التحكم
 # =========================================================
 
 st.markdown("""
@@ -427,16 +434,20 @@ if start_btn:
             for i, f in enumerate(uploaded_banks):
                 log(f"جاري قراءة الملف: {f.name}")
                 df = fetch_smart_questions(f)
-                if not df.empty: all_dfs.append(df)
-                else: log(f"تحذير: الملف {f.name} لا يحتوي على أسئلة مقروءة أو التظليل غير واضح.")
+                if not df.empty: 
+                    all_dfs.append(df)
+                    log(f"✅ تم قراءة {len(df)} سؤال من الملف.")
+                else: 
+                    log(f"⚠️ تحذير: الملف {f.name} يبدو فارغاً أو الهيدر غير مطابق.")
+                    st.warning(f"لم يتم العثور على أسئلة في {f.name}. تأكد أن العمود اسمه 'السؤال' والعمود الآخر 'الوحدة' وأن الإجابة ملونة.")
                 progress_bar.progress((i + 1) / (total_files * 2)) 
                 gc.collect()
             
             if not all_dfs:
-                st.error("لم يتم العثور على أسئلة! هل تأكدت أن الإجابة الصحيحة مظللة؟")
+                st.error("❌ لم يتم العثور على أي أسئلة صالحة في جميع الملفات!")
             else:
                 BIG_DF = pd.concat(all_dfs).reset_index(drop=True)
-                log(f"تم استخراج {len(BIG_DF)} سؤال بنجاح.")
+                log(f"📊 المجموع الكلي للأسئلة: {len(BIG_DF)}")
                 del all_dfs; gc.collect()
                 
                 zip_buffer = io.BytesIO()
