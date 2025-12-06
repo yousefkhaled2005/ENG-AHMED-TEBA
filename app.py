@@ -78,7 +78,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 🔧 دوال المعالجة (Logic) - تم التحديث للتعامل مع ألوان الإكسل بدقة
+# 🔧 دوال المعالجة (Logic) - تعديل خاص لملفك
 # =========================================================
 
 def normalize_text(text):
@@ -152,25 +152,32 @@ def add_question_block(doc, q_num, q_text, options):
         run_opt = opt_p.add_run(f"{lbl}. {opt_text}"); force_font(run_opt, size=14, is_bold=False)
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-# --- File Readers ---
-
-def get_xlsx_color_signature(cell):
+# --- Logic to Detect Colors in YOUR File ---
+def is_cell_green_or_colored(cell):
     """
-    استخراج بصمة اللون للخلية بغض النظر عن نوعه (Theme, RGB, Indexed)
-    للمقارنة بين الخلايا في نفس الصف
+    Check if cell has ANY fill that is not standard white/transparent.
+    This works best for your sheet where only the answer is green.
     """
     if not cell.fill or not cell.fill.start_color:
-        return "NONE"
+        return False
     
-    color = cell.fill.start_color
-    if color.type == 'rgb':
-        # ignore transparent or pure white if logic demands, but better keep distinct
-        return f"RGB:{color.rgb}"
-    elif color.type == 'theme':
-        return f"THEME:{color.theme}:TINT:{color.tint}"
-    elif color.type == 'indexed':
-        return f"INDEX:{color.indexed}"
-    return "NONE"
+    c = cell.fill.start_color
+    
+    # 1. Check RGB (00000000 and FFFFFFFF are usually transparency/white)
+    if c.type == 'rgb':
+        if str(c.rgb).upper() in ['00000000', 'FFFFFFFF', 'NONE']:
+            return False
+        return True # Any other RGB is a color
+        
+    # 2. Check Theme
+    if c.type == 'theme':
+        # Usually Theme 0 is Light/White, Theme 1 is Dark/Black.
+        # If theme is NOT 0/1, or if it has a tint, it's likely your Green.
+        if c.theme in [0, 1] and (c.tint == 0.0):
+            return False
+        return True
+        
+    return False
 
 def _read_xlsx_questions(file_obj):
     try: wb = openpyxl.load_workbook(file_obj, data_only=False)
@@ -178,98 +185,71 @@ def _read_xlsx_questions(file_obj):
     
     sh = wb.active
     rows = list(sh.iter_rows())
-    hr = -1; cols = {'u': -1, 'q': -1, 'obj': -1}
+    hr = -1; cols = {'u': -1, 'q': -1}
     
-    # Header Detection
-    for r_idx, row in enumerate(rows[:25]): # Scan first 25 rows
+    # Header Detection (Extended search for your file structure)
+    for r_idx, row in enumerate(rows[:30]): 
         vs = [normalize_text(cell.value) for cell in row]
-        # Check for standard headers (Question, Unit)
         if any('سؤال' in x for x in vs) and any('وحده' in x for x in vs):
             hr = r_idx
             for c_idx, v in enumerate(vs):
                 if 'وحده' in v: cols['u'] = c_idx
                 elif 'سؤال' in v: cols['q'] = c_idx
-                elif 'هدف' in v: cols['obj'] = c_idx
             break
             
     if hr == -1: return pd.DataFrame()
 
-    # Determine Options Range (Between Unit and Question, usually)
-    start_opt = min(cols['u'], cols['q']) + 1
-    end_opt = max(cols['u'], cols['q'])
+    # Determine Options Range (Between Unit and Question based on your image)
+    # Your image shows Unit is far left (Col N?), Question is right (Col H?).
+    # So options are BETWEEN them.
+    idx1 = cols['u']
+    idx2 = cols['q']
+    start_opt = min(idx1, idx2) + 1
+    end_opt = max(idx1, idx2)
     opt_cols = list(range(start_opt, end_opt))
+    
     data = []
 
     for row in rows[hr+1:]:
         try:
             u_val = row[cols['u']].value
             q_val = row[cols['q']].value
-            if not u_val or not q_val: continue # Skip empty rows or sub-headers
+            
+            # Skip rows that are sub-headers (like "الهدف التفصيلي")
+            # If Question cell is empty, it's likely a separator row
+            if not q_val: continue
             
             u = normalize_text(u_val)
             q = str(q_val).strip()
         except IndexError: continue
         
-        cat = u
-        if cols['obj'] != -1 and cols['obj'] < len(row): 
-            if row[cols['obj']].value: cat += str(row[cols['obj']].value)
+        # In your sheet, sub-headers exist in the "Unit" column sometimes
+        if not q or len(q) < 3: continue 
 
         o_txt = []
-        o_sigs = [] # Color signatures
+        corr = ""
         
         for ci in opt_cols:
             if ci < len(row):
                 cell = row[ci]
                 val = str(cell.value if cell.value else "").strip()
-                sig = get_xlsx_color_signature(cell)
-                o_txt.append(val)
-                o_sigs.append(sig)
+                
+                if val: # Only if cell has text
+                    o_txt.append(val)
+                    # Check if THIS cell is the green one
+                    if is_cell_green_or_colored(cell):
+                        corr = val
         
-        # --- Smart Color Logic ---
-        # Find the "Unique" color in this row.
-        # If we have [White, White, Green, White], Green is the answer.
-        corr = ""
-        valid_indices = [i for i, txt in enumerate(o_txt) if txt]
-        valid_sigs = [o_sigs[i] for i in valid_indices]
-        
-        if valid_sigs:
-            # Check if there is a color that appears exactly ONCE while others appear multiple times
-            # Or if there is a color different from the "mode" (most common color)
-            counts = Counter(valid_sigs)
-            
-            # Scenario 1: One distinct color, others are same
-            # e.g., {White: 3, Green: 1} -> Green is answer
-            unique_sig = next((k for k, v in counts.items() if v == 1), None)
-            
-            found_idx = -1
-            if unique_sig and len(counts) > 1:
-                # We found a unique color!
-                for i in valid_indices:
-                    if o_sigs[i] == unique_sig:
-                        found_idx = i; break
-            
-            # Scenario 2: If simple unique fails, try just finding non-default
-            # (Fallback if logic is tricky, but Unique is usually safest for MCQ)
-            if found_idx == -1 and len(counts) > 1:
-                 # Try to exclude common "White/Transparent" signatures if possible
-                 # But sticking to "Minority Color" is usually correct.
-                 # Let's check for "Any color that is NOT the most common one"
-                 most_common = counts.most_common(1)[0][0]
-                 for i in valid_indices:
-                     if o_sigs[i] != most_common:
-                         found_idx = i; break
-
-            if found_idx != -1:
-                corr = o_txt[found_idx]
-
+        # Fallback: If no color detected, but we have text, skip (to be safe)
+        # Or you could default to first option if you prefer.
         real_opts = [x for x in o_txt if x]
         if real_opts and corr:
-            data.append({'category': cat, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
+            data.append({'category': u, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
             
     return pd.DataFrame(data)
 
 def _read_xls_questions(file_obj):
-    # (Same as before, XLS handling is usually stable)
+    # XLS logic is simpler (old format handles colors differently)
     try:
         content = file_obj.read()
         book = xlrd.open_workbook(file_contents=content, formatting_info=True)
@@ -280,15 +260,14 @@ def _read_xls_questions(file_obj):
         if 'بنك' in n or 'اسئله' in normalize_text(n): sh = book.sheet_by_name(n); break
     if not sh: sh = book.sheet_by_index(0)
     
-    hr = -1; cols = {'u': -1, 'q': -1, 'obj': -1}
-    for r in range(min(25, sh.nrows)):
+    hr = -1; cols = {'u': -1, 'q': -1}
+    for r in range(min(30, sh.nrows)):
         vs = [normalize_text(sh.cell_value(r, c)) for c in range(sh.ncols)]
         if any('سؤال' in x for x in vs) and any('وحده' in x for x in vs):
             hr = r
             for c, v in enumerate(vs):
                 if 'وحده' in v: cols['u'] = c
                 elif 'سؤال' in v: cols['q'] = c
-                elif 'هدف' in v: cols['obj'] = c
             break
     if hr == -1: return pd.DataFrame()
     
@@ -299,9 +278,8 @@ def _read_xls_questions(file_obj):
     for r in range(hr+1, sh.nrows):
         u = normalize_text(sh.cell_value(r, cols['u']))
         q = str(sh.cell_value(r, cols['q'])).strip()
-        cat = u
-        if cols['obj'] != -1: cat += str(sh.cell_value(r, cols['obj']))
-        if not u or not q: continue
+        if not q: continue
+        
         o_txt = []; o_clr = []
         for ci in opt_cols:
             if ci < sh.ncols:
@@ -309,20 +287,15 @@ def _read_xls_questions(file_obj):
                 clr = book.xf_list[sh.cell_xf_index(r, ci)].background.pattern_colour_index
                 o_txt.append(val); o_clr.append(clr)
         
-        corr = ""; v_idx = [i for i,x in enumerate(o_txt) if x]; v_clr = [o_clr[i] for i in v_idx]
-        ci = -1
-        if v_clr:
-            cnt = Counter(v_clr); uniq = next((k for k,v in cnt.items() if v==1), None)
-            if uniq: 
-                for i in v_idx: 
-                    if o_clr[i] == uniq: ci=i; break
-            else: 
-                for i in v_idx: 
-                    if o_clr[i]!=64: ci=i; break # 64 is standard white/auto
-        if ci != -1: corr = o_txt[ci]
+        corr = ""
+        # In XLS, 64 is typically "Auto/White". Anything else is colored.
+        for i, val in enumerate(o_txt):
+            if val and o_clr[i] != 64:
+                corr = val; break
+                
         real_opts = [x for x in o_txt if x]
         if real_opts and corr:
-            data.append({'category': cat, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
+            data.append({'category': u, 'unit':u, 'question':q, 'options':real_opts[:4], 'correct_text':corr})
     return pd.DataFrame(data)
 
 def fetch_smart_questions(uploaded_file):
@@ -339,32 +312,18 @@ def get_master_pattern_from_file(uploaded_file, limit=30):
         sheet = wb.active
         pattern = []
         for row in sheet.iter_rows():
-            sigs = []
-            vals = []
-            for cell in row:
-                sigs.append(get_xlsx_color_signature(cell))
-                vals.append(cell.value)
-            
-            # Logic: Find unique color
-            counts = Counter(sigs)
-            uniq = next((k for k, v in counts.items() if v == 1), None)
-            
-            found_in_row = -1
-            if uniq and len(counts) > 1:
-                # Find which index (0=A, 1=B...) matches the unique color AND has text
-                # Simple logic for pattern template: Just find the colored cell's text content
-                # "أ" or "ب" ...
-                for i, sig in enumerate(sigs):
-                    if sig == uniq and vals[i]:
-                        txt = str(vals[i]).strip()
-                        if 'أ' in txt or 'ا' in txt: found_in_row = 0
-                        elif 'ب' in txt: found_in_row = 1
-                        elif 'ج' in txt: found_in_row = 2
-                        elif 'د' in txt: found_in_row = 3
-                        break
-            
-            if found_in_row != -1: pattern.append(found_in_row)
-            else: pattern.append(random.randint(0,3))
+            for i, cell in enumerate(row):
+                if is_cell_green_or_colored(cell) and cell.value:
+                    txt = str(cell.value).strip()
+                    if 'أ' in txt or 'ا' in txt: pattern.append(0)
+                    elif 'ب' in txt: pattern.append(1)
+                    elif 'ج' in txt: pattern.append(2)
+                    elif 'د' in txt: pattern.append(3)
+                    else: pattern.append(random.randint(0,3)) # Found color but text unclear
+                    break
+            else:
+                # If loop finishes without break, random
+                if len(pattern) < limit: pattern.append(random.randint(0,3))
             
             if len(pattern) >= limit: break
             
@@ -415,7 +374,7 @@ with st.sidebar:
         log_placeholder.markdown(f'<div class="log-container"><pre>{log_txt}</pre></div>', unsafe_allow_html=True)
         time.sleep(0.05)
     
-    st.info("نظام ذكي لتوليد الاختبارات المتوازنة من ملفات الإكسل.")
+    st.info("نظام ذكي لتوليد الاختبارات المتوازنة.")
 
 st.subheader("1️⃣ رفع بنوك الأسئلة")
 uploaded_banks = st.file_uploader(
@@ -469,12 +428,12 @@ if start_btn:
                 log(f"جاري قراءة الملف: {f.name}")
                 df = fetch_smart_questions(f)
                 if not df.empty: all_dfs.append(df)
-                else: log(f"تحذير: الملف {f.name} لا يحتوي على أسئلة مقروءة! تأكد من التظليل.")
+                else: log(f"تحذير: الملف {f.name} لا يحتوي على أسئلة مقروءة أو التظليل غير واضح.")
                 progress_bar.progress((i + 1) / (total_files * 2)) 
                 gc.collect()
             
             if not all_dfs:
-                st.error("لم يتم العثور على أسئلة صالحة! (تأكد أن الإجابة الصحيحة مظللة بلون مختلف عن البقية)")
+                st.error("لم يتم العثور على أسئلة! هل تأكدت أن الإجابة الصحيحة مظللة؟")
             else:
                 BIG_DF = pd.concat(all_dfs).reset_index(drop=True)
                 log(f"تم استخراج {len(BIG_DF)} سؤال بنجاح.")
@@ -518,7 +477,7 @@ if start_btn:
                 progress_bar.progress(100)
                 log("✅ تمت العملية بنجاح!")
                 st.balloons()
-                st.success(f"تم إنشاء {len(BIG_DF)} سؤال في الملفات وجاهزة للتحميل.")
+                st.success(f"تم إنشاء {len(BIG_DF)} سؤال بنجاح.")
                 
                 st.download_button(
                     label="📥 تحميل الملفات المضغوطة (ZIP)",
