@@ -14,7 +14,7 @@ from collections import Counter
 import time
 
 # =========================================================
-#  🎨 إعدادات التصميم (UI/UX) - محاكاة الصور المرفقة
+#  🎨 إعدادات التصميم (UI/UX)
 # =========================================================
 st.set_page_config(
     page_title="مولد الاختبارات المتقدم",
@@ -23,52 +23,29 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for RTL and Card Styling
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
-    
     * {font-family: 'Cairo', sans-serif;}
-    
     .main {direction: rtl;}
-    
-    /* Blue Info Box */
     .stAlert {direction: rtl; text-align: right;}
-    
-    /* Card Styling */
     div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
-        background-color: #ffffff;
-        border-radius: 10px;
-        padding: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        margin-bottom: 15px;
-        border: 1px solid #e0e0e0;
+        background-color: #ffffff; border-radius: 10px; padding: 15px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 15px; border: 1px solid #e0e0e0;
     }
-    
-    /* Uploaders */
     .stFileUploader {padding-top: 10px;}
-    
-    /* Log Console */
     .log-container {
-        background-color: #1e1e1e;
-        color: #00ff00;
-        font-family: 'Courier New', monospace;
-        padding: 10px;
-        border-radius: 5px;
-        height: 200px;
-        overflow-y: auto;
-        font-size: 12px;
-        direction: ltr;
-        text-align: left;
+        background-color: #1e1e1e; color: #00ff00; font-family: 'Courier New', monospace;
+        padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto;
+        font-size: 12px; direction: ltr; text-align: left;
     }
-    
     h1, h2, h3, h4, p, label {text-align: right;}
     .stButton button {width: 100%; font-weight: bold; font-size: 18px; padding: 10px;}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-#  🔧 دوال المعالجة (Core Logic) - معدلة للويب
+#  🔧 دوال المعالجة (Core Logic)
 # =========================================================
 
 def normalize_text(text):
@@ -79,17 +56,24 @@ def normalize_text(text):
 def clean_for_comp(text): return normalize_text(text).replace(" ", "")
 
 def force_align_options(options, correct_text, target_idx):
-    final_opts = options[:]
+    final_opts = list(options) if options else []
     while len(final_opts) < 4: final_opts.append("---")
+    
     current_idx = -1
     clean_corr = clean_for_comp(correct_text)
+    
     for i, opt in enumerate(final_opts):
         if clean_for_comp(str(opt)) == clean_corr: current_idx = i; break
+            
     if current_idx != -1:
         if current_idx != target_idx:
-            temp = final_opts[target_idx]; final_opts[target_idx] = final_opts[current_idx]; final_opts[current_idx] = temp
-    else: final_opts[target_idx] = correct_text
-    return final_opts
+            # Swap
+            final_opts[target_idx], final_opts[current_idx] = final_opts[current_idx], final_opts[target_idx]
+    else:
+        # Fallback: Force place text if not found
+        final_opts[target_idx] = correct_text
+            
+    return final_opts[:4]
 
 # --- Word Formatting ---
 def set_section_rtl_and_margins(section):
@@ -142,7 +126,7 @@ def add_question_block(doc, q_num, q_text, options):
         run_opt = opt_p.add_run(f"{lbl}. {opt_text}"); force_font(run_opt, size=14, is_bold=False)
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-# --- File Readers (Adapted for Streamlit file objects) ---
+# --- File Readers ---
 def _read_xls_questions(file_obj):
     try:
         content = file_obj.read()
@@ -186,6 +170,7 @@ def _read_xls_questions(file_obj):
         corr = ""; v_idx = [i for i,x in enumerate(o_txt) if x]; v_clr = [o_clr[i] for i in v_idx]
         ci = -1
         if v_clr:
+            from collections import Counter
             cnt = Counter(v_clr); uniq = next((k for k,v in cnt.items() if v==1), None)
             if uniq: 
                 for i in v_idx: 
@@ -225,6 +210,7 @@ def _read_xlsx_questions(file_obj):
             u = normalize_text(row[cols['u']].value)
             q = str(row[cols['q']].value if row[cols['q']].value else "").strip()
         except IndexError: continue
+        
         cat = u
         if cols['obj'] != -1 and cols['obj'] < len(row): cat += str(row[cols['obj']].value)
         if not u or not q: continue
@@ -252,7 +238,6 @@ def _read_xlsx_questions(file_obj):
     return pd.DataFrame(data)
 
 def fetch_smart_questions(uploaded_file):
-    # Reset file pointer
     uploaded_file.seek(0)
     if uploaded_file.name.lower().endswith('.xls'):
         return _read_xls_questions(uploaded_file)
@@ -260,7 +245,10 @@ def fetch_smart_questions(uploaded_file):
         return _read_xlsx_questions(uploaded_file)
     return pd.DataFrame()
 
-def get_master_pattern_from_file(uploaded_file, limit=30):
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+#  🚨 الدالة الهجينة لقراءة المفتاح (Hybrid Key Reader)
+# +++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+def get_master_pattern_hybrid(uploaded_file, limit=30):
     if uploaded_file is None:
         return [random.randint(0,3) for _ in range(limit)]
     try:
@@ -268,20 +256,40 @@ def get_master_pattern_from_file(uploaded_file, limit=30):
         wb = openpyxl.load_workbook(uploaded_file, data_only=False)
         sheet = wb.active
         pattern = []
+        
         for row in sheet.iter_rows():
             found_in_row = -1
+            
+            # نفحص كل خلية في الصف
             for cell in row:
+                # 1. فحص اللون
                 is_colored = False
                 if cell.fill and cell.fill.start_color:
                     if cell.fill.start_color.type == 'rgb' and cell.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_colored = True
                     elif cell.fill.start_color.type == 'theme': is_colored = True
-                if is_colored and cell.value:
-                    txt = str(cell.value).strip()
-                    if 'أ' in txt or 'ا' in txt: found_in_row = 0
-                    elif 'ب' in txt: found_in_row = 1
-                    elif 'ج' in txt: found_in_row = 2
-                    elif 'د' in txt: found_in_row = 3
-                    if found_in_row != -1: pattern.append(found_in_row); break
+                
+                # 2. فحص القيمة (نص أو نجمة)
+                val = str(cell.value).strip() if cell.value else ""
+                
+                # الشرط: لون أو نجمة أو نص صريح (أ، ب، ج، د)
+                if is_colored or ('*' in val) or (val in ['أ','ب','ج','د','1','2','3','4']):
+                    if 'أ' in val or '1' in val: found_in_row=0
+                    elif 'ب' in val or '2' in val: found_in_row=1
+                    elif 'ج' in val or '3' in val: found_in_row=2
+                    elif 'د' in val or '4' in val: found_in_row=3
+                    
+                    # لو ملونة بس مش مكتوب فيها حاجة، نحاول نخمن مكانها
+                    # (هنا بنفترض أن العمود الأول أ، الثاني ب...)
+                    if found_in_row == -1 and is_colored:
+                         # نعتمد على index العمود في نطاق الخيارات (يحتاج ضبط دقيق، لذا نفضل النص)
+                         # للتبسيط: لو ملونة ومافيهاش نص، ممكن نتجاهلها أو نعتبرها إجابة لو عرفنا مكانها
+                         pass 
+                         
+                    if found_in_row != -1: 
+                        pattern.append(found_in_row)
+                        break
+                        
+        # إكمال عشوائي للنقص
         while len(pattern) < limit: pattern.append(random.randint(0,3))
         return pattern
     except:
@@ -305,23 +313,22 @@ def generate_balanced_exam(all_data_df, total):
     return res.sample(frac=1).reset_index(drop=True)
 
 # =========================================================
-#  🖥️ واجهة المستخدم (UI Layout)
+#  🖥️ واجهة المستخدم
 # =========================================================
 
-st.title("📄 مولد الاختبارات المتقدم")
-st.info("نصيحة هامة: لضمان أفضل نتيجة، يفضل تحويل ملفات بنك الأسئلة وملفات المفاتيح إلى صيغة xlsx الحديثة، أو استخدام xls القديمة للأسئلة الملونة.")
+st.title("📄 نظام توليد الاختبارات المتقدم")
+st.info("نصيحة: تأكد أن ملف المفتاح (Excel) يحتوي على إجابات ملونة أو معلمة بنجمة (*) أو حروف (أ،ب،ج،د).")
 
-# --- المنطقة العلوية: السجل وبنوك الأسئلة ---
+# --- المنطقة العلوية ---
 col_log, col_banks = st.columns([1, 2])
 
 with col_log:
     st.subheader(">_ سجل العمليات")
     log_placeholder = st.empty()
     logs = ["Ready..."]
-    
     def log(msg):
         logs.append(f"> {msg}")
-        log_txt = "\n".join(logs[-10:]) # Keep last 10 lines
+        log_txt = "\n".join(logs[-10:])
         log_placeholder.markdown(f'<div class="log-container"><pre>{log_txt}</pre></div>', unsafe_allow_html=True)
         time.sleep(0.1)
 
@@ -336,8 +343,8 @@ with col_banks:
 
 st.markdown("---")
 
-# --- المنطقة السفلية: إعدادات النماذج ---
-st.subheader("2️⃣ إعدادات النماذج (مفتاح الإجابة + التمبلت)")
+# --- المنطقة السفلية ---
+st.subheader("2️⃣ إعدادات النماذج")
 
 models_config = [
     {"name": "ا_صباحي", "folder": "صباحي", "key": "am1"},
@@ -350,38 +357,22 @@ models_config = [
 
 model_inputs = {}
 
-# إنشاء شبكة الكروت (Grid)
 for model in models_config:
-    with st.container():
-        # Header Row for Card
-        c1, c2 = st.columns([8, 1])
-        with c1: st.markdown(f"#### 📂 {model['name']}")
-        with c2: st.markdown(f"_{model['folder']}_")
-        
-        # Inputs Row
-        col_temp, col_key = st.columns(2)
-        with col_temp:
-            t_file = st.file_uploader("رفع التمبلت (Word)", type=['docx'], key=f"t_{model['key']}")
-        with col_key:
-            k_file = st.file_uploader("رفع مفتاح الإجابة (Excel)", type=['xlsx'], key=f"k_{model['key']}")
-        
-        model_inputs[model['name']] = {
-            "folder": model['folder'],
-            "template": t_file,
-            "key": k_file
-        }
+    with st.expander(f"📌 {model['name']}", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1: t_file = st.file_uploader("التمبلت (Word)", type=['docx'], key=f"t_{model['key']}")
+        with c2: k_file = st.file_uploader("المفتاح (Excel)", type=['xlsx'], key=f"k_{model['key']}")
+        model_inputs[model['name']] = {"folder": model['folder'], "template": t_file, "key": k_file}
 
 st.markdown("---")
 max_q_count = st.number_input("عدد الأسئلة في النموذج", min_value=1, value=30)
 
-# --- زر التنفيذ ---
 if st.button("🚀 إنشاء النماذج وتحميل", use_container_width=True):
     if not uploaded_banks:
         st.error("⚠️ يجب رفع بنك أسئلة واحد على الأقل!")
     else:
         try:
             log("بدء المعالجة...")
-            # 1. تجميع الأسئلة
             all_dfs = []
             for f in uploaded_banks:
                 log(f"قراءة: {f.name}")
@@ -395,22 +386,19 @@ if st.button("🚀 إنشاء النماذج وتحميل", use_container_width=
                 BIG_DF = pd.concat(all_dfs).reset_index(drop=True)
                 log(f"تم تحميل {len(BIG_DF)} سؤال.")
                 
-                # 2. إنشاء ملف ZIP
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w") as zf:
                     
                     for m_name, inputs in model_inputs.items():
                         log(f"جاري بناء: {m_name}...")
                         
-                        # أ) المفتاح
-                        pattern = get_master_pattern_from_file(inputs['key'], limit=max_q_count)
+                        # أ) استخدام القارئ الهجين للمفتاح
+                        pattern = get_master_pattern_hybrid(inputs['key'], limit=max_q_count)
                         
-                        # ب) التوليد
                         exam_df = generate_balanced_exam(BIG_DF, max_q_count)
                         if len(exam_df) > max_q_count: exam_df = exam_df.iloc[:max_q_count]
                         exam_df = exam_df.reset_index(drop=True)
                         
-                        # ج) الوورد
                         if inputs['template']:
                             inputs['template'].seek(0)
                             doc = Document(inputs['template'])
@@ -428,7 +416,6 @@ if st.button("🚀 إنشاء النماذج وتحميل", use_container_width=
                             final_opts = force_align_options(row['options'], row['correct_text'], target_idx)
                             add_question_block(doc, idx+1, row['question'], final_opts)
                         
-                        # د) الحفظ داخل الـ Zip
                         doc_io = io.BytesIO()
                         doc.save(doc_io)
                         zip_path = f"{inputs['folder']}/{m_name}.docx"
