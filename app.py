@@ -6,32 +6,33 @@ import random
 import io
 import zipfile
 import gc
+import time
 from docx import Document
 from docx.shared import Pt, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from collections import Counter
-import time
 
 # =========================================================
 #  🎨 إعدادات الصفحة
 # =========================================================
-st.set_page_config(page_title="نظام الاختبارات الذكي", layout="wide")
+st.set_page_config(page_title="نظام الاختبارات الذكي", page_icon="🎓", layout="wide")
+
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&display=swap');
     * {font-family: 'Cairo', sans-serif;}
     .main {direction: rtl;}
-    .stButton button {width: 100%; font-weight: bold; font-size: 18px; padding: 10px; background-color: #4CAF50; color: white;}
+    .stButton button {width: 100%; font-weight: bold; font-size: 18px; padding: 10px; background-color: #ff4b4b; color: white;}
+    div[data-testid="stExpander"] {border: 1px solid #ddd; border-radius: 8px;}
     .log-box {background-color: #262730; color: #00ff00; padding: 10px; border-radius: 5px; height: 200px; overflow-y: auto; direction: ltr; text-align: left; font-family: monospace;}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-#  ⚙️ دوال المعالجة (المنطق)
+#  ⚙️ المنطق (القراءة الذكية + التوليد)
 # =========================================================
-
 def normalize_text(text):
     if pd.isna(text) or str(text).strip() == "": return ""
     text = str(text).strip()
@@ -42,22 +43,17 @@ def clean_for_comp(text): return normalize_text(text).replace(" ", "")
 def force_align_options(options, correct_text, target_idx):
     final_opts = list(options) if options else []
     while len(final_opts) < 4: final_opts.append("---")
-    
     current_idx = -1
     clean_corr = clean_for_comp(correct_text)
-    
     for i, opt in enumerate(final_opts):
         if clean_for_comp(str(opt)) == clean_corr: current_idx = i; break
-            
     if current_idx != -1:
         if current_idx != target_idx:
             final_opts[target_idx], final_opts[current_idx] = final_opts[current_idx], final_opts[target_idx]
-    else:
-        final_opts[target_idx] = correct_text
-            
+    else: final_opts[target_idx] = correct_text
     return final_opts[:4]
 
-# --- Word Formatting ---
+# --- Word Helpers ---
 def set_section_rtl(section):
     if not section._sectPr.find(qn('w:bidi')):
         section._sectPr.append(OxmlElement('w:bidi'))
@@ -101,100 +97,123 @@ def add_question(doc, num, text, opts):
         doc.add_paragraph().paragraph_format.space_after = Pt(6)
     except: pass
 
-# --- القارئ الذكي (Heuristic Reader) ---
+# --- القارئ الذكي جداً (Super Smart Reader) ---
+# يبحث عن كلمة "سؤال" ويأخذ الأعمدة الأربعة التي تليها مباشرة كخيارات
 @st.cache_data(show_spinner=False)
 def read_question_bank_smart(file_bytes, filename):
     file_bytes.seek(0)
     try:
-        data = []
-        
-        # 1. XLSX (الحديث - يدعم الألوان)
+        # 1. XLSX
         if filename.lower().endswith('.xlsx'):
             wb = openpyxl.load_workbook(file_bytes, data_only=False); sh = wb.active
             rows = list(sh.iter_rows())
-            
-            # --- استراتيجية البحث الذكي عن الأعمدة ---
-            q_col_idx = -1
-            
-            # محاولة 1: البحث عن كلمة "سؤال" في أول 20 صف
-            for r_idx, row in enumerate(rows[:20]):
+            hr = -1; cols = {'u': -1, 'q': -1, 'obj': -1}
+            # بحث عن الهيدر
+            for r_idx, row in enumerate(rows[:25]): # وسعنا النطاق لـ 25 صف
                 vs = [normalize_text(c.value) for c in row]
                 if any('سؤال' in x for x in vs):
+                    hr = r_idx
                     for c_idx, v in enumerate(vs):
-                        if 'سؤال' in v: q_col_idx = c_idx; break
+                        if 'وحده' in v: cols['u'] = c_idx
+                        elif 'سؤال' in v: cols['q'] = c_idx
+                        elif 'هدف' in v: cols['obj'] = c_idx
                     break
             
-            # محاولة 2 (الطوارئ): البحث عن العمود صاحب أطول نصوص (هو غالباً السؤال)
-            if q_col_idx == -1:
-                max_avg_len = 0
-                for c_idx in range(sh.max_column):
-                    col_vals = [str(r[c_idx].value) for r in rows if r[c_idx].value]
-                    if not col_vals: continue
-                    avg_len = sum(len(s) for s in col_vals) / len(col_vals)
-                    if avg_len > max_avg_len:
-                        max_avg_len = avg_len
-                        q_col_idx = c_idx
-
-            if q_col_idx == -1: return pd.DataFrame()
+            if hr == -1 or cols['q'] == -1: return pd.DataFrame()
             
-            # نفترض أن الاختيارات هي الـ 4 أعمدة التالية
-            opt_cols = [q_col_idx+1, q_col_idx+2, q_col_idx+3, q_col_idx+4]
+            # القاعدة الذهبية: الاختيارات هي الـ 4 أعمدة بعد السؤال مباشرة
+            s_opt = cols['q'] + 1
+            opt_cols = [s_opt, s_opt+1, s_opt+2, s_opt+3]
             
-            # استخراج البيانات
-            for row in rows:
-                try: 
-                    # تخطي الصفوف القصيرة
-                    if len(row) <= max(opt_cols): continue
-                    
-                    q_val = str(row[q_col_idx].value).strip()
-                    # تجاهل العناوين والأرقام الصغيرة
-                    if not q_val or len(q_val) < 5 or q_val == "None": continue
-                    if "سؤال" in normalize_text(q_val): continue # تخطي صف العنوان نفسه
-
-                    o_txt = []; o_is_col = []
-                    for ci in opt_cols:
-                        cell = row[ci]
-                        val = str(cell.value if cell.value else "").strip()
-                        
-                        is_colored = False
-                        if cell.fill and cell.fill.start_color:
-                            if cell.fill.start_color.type == 'rgb' and cell.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_colored = True
-                            elif cell.fill.start_color.type == 'theme': is_colored = True
-                        
-                        o_txt.append(val)
-                        o_is_col.append(is_colored)
-                    
-                    # هل يوجد خيارات؟
-                    real_opts = [x for x in o_txt if x]
-                    if len(real_opts) < 2: continue # سؤال بدون خيارات كافية
-                    
-                    # تحديد الإجابة
-                    corr = ""
-                    for i, is_c in enumerate(o_is_col):
-                        if is_c and o_txt[i]: corr = o_txt[i]; break
-                    
-                    # إذا لم نجد لوناً، نعتبر السؤال صالحاً ولكن بدون إجابة (سيظهر في التقرير)
-                    # أو يمكننا تجاهله. هنا سأضيفه
-                    
-                    # الوحدة (اختياري)
-                    # نفترض أنها العمود قبل السؤال أو بعد الخيارات (تخمين)
-                    # للتبسيط سنجعلها "عام"
-                    cat = "عام"
-                    
-                    if corr:
-                        data.append({'category': cat, 'question': q_val, 'options': real_opts[:4], 'correct_text': corr})
-
+            data = []
+            for row in rows[hr+1:]:
+                try: q = str(row[cols['q']].value if row[cols['q']].value else "").strip()
                 except: continue
+                if not q: continue
+                
+                u = "عام"
+                if cols['u'] != -1 and cols['u'] < len(row): 
+                    val = row[cols['u']].value; u = normalize_text(val) if val else "عام"
+                cat = u + (str(row[cols['obj']].value) if cols['obj']!=-1 and cols['obj']<len(row) and row[cols['obj']].value else "")
+                
+                o_txt = []; o_is_col = []
+                for ci in opt_cols:
+                    if ci < len(row):
+                        c = row[ci]; val = str(c.value if c.value else "").strip()
+                        is_col = False
+                        if c.fill and c.fill.start_color:
+                            if c.fill.start_color.type == 'rgb' and c.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_col=True
+                            elif c.fill.start_color.type == 'theme': is_col=True
+                        o_txt.append(val); o_is_col.append(is_col)
+                    else: o_txt.append(""); o_is_col.append(False)
+                
+                corr = ""; found_idx = -1
+                for i in range(len(o_txt)):
+                    if o_txt[i] and o_is_col[i]: found_idx = i; break
+                
+                if found_idx != -1: corr = o_txt[found_idx]
+                real = [x for x in o_txt if x]
+                if real and corr:
+                    data.append({'category': cat, 'question':q, 'options':real[:4], 'correct_text':corr})
+            return pd.DataFrame(data)
 
-        # 2. XLS (القديم)
+        # 2. XLS
         elif filename.lower().endswith('.xls'):
-            # نفس المنطق باستخدام xlrd...
-            # (اختصاراً للكود، نركز على xlsx لأنه الأهم للألوان)
-            pass
+            book = xlrd.open_workbook(file_contents=file_bytes.read(), formatting_info=True)
+            sh = book.sheet_by_index(0)
+            for n in book.sheet_names():
+                if 'بنك' in n or 'اسئله' in normalize_text(n): sh = book.sheet_by_name(n); break
+            
+            hr = -1; cols = {'u': -1, 'q': -1, 'obj': -1}
+            for r in range(min(25, sh.nrows)):
+                vs = [normalize_text(sh.cell_value(r, c)) for c in range(sh.ncols)]
+                if any('سؤال' in x for x in vs):
+                    hr = r
+                    for c, v in enumerate(vs):
+                        if 'وحده' in v: cols['u'] = c
+                        elif 'سؤال' in v: cols['q'] = c
+                        elif 'هدف' in v: cols['obj'] = c
+                    break
+            
+            if hr == -1 or cols['q'] == -1: return pd.DataFrame()
+            
+            s_opt = cols['q'] + 1
+            opt_cols = [s_opt, s_opt+1, s_opt+2, s_opt+3]
+            
+            data = []
+            for r in range(hr+1, sh.nrows):
+                q = str(sh.cell_value(r, cols['q'])).strip()
+                if not q: continue
+                u = str(sh.cell_value(r, cols['u'])).strip() if cols['u']!=-1 else "عام"
+                cat = u + (str(sh.cell_value(r, cols['obj'])) if cols['obj']!=-1 else "")
 
-        return pd.DataFrame(data)
+                o_txt = []; o_clr = []
+                for ci in opt_cols:
+                    if ci < sh.ncols:
+                        o_txt.append(str(sh.cell_value(r, ci)).strip())
+                        o_clr.append(book.xf_list[sh.cell_xf_index(r, ci)].background.pattern_colour_index)
+                    else: o_txt.append(""); o_clr.append(64)
+                
+                corr = ""; found_idx = -1
+                valid_clrs = [o_clr[i] for i, txt in enumerate(o_txt) if txt]
+                if valid_clrs:
+                    cnt = Counter(valid_clrs)
+                    uniq = next((k for k,v in cnt.items() if v==1), None)
+                    if uniq: 
+                        for i in range(len(o_txt)):
+                            if o_txt[i] and o_clr[i] == uniq: found_idx = i; break
+                    else:
+                        for i in range(len(o_txt)):
+                            if o_txt[i] and o_clr[i] != 64: found_idx = i; break
+                
+                if found_idx != -1: corr = o_txt[found_idx]
+                real = [x for x in o_txt if x]
+                if real and corr:
+                    data.append({'category': cat, 'question':q, 'options':real[:4], 'correct_text':corr})
+            return pd.DataFrame(data)
 
-    except Exception as e: return pd.DataFrame()
+    except: return pd.DataFrame()
+    return pd.DataFrame()
 
 def get_master_pattern(file_obj, limit=30):
     if not file_obj: return [random.randint(0,3) for _ in range(limit)]
@@ -205,9 +224,13 @@ def get_master_pattern(file_obj, limit=30):
         for row in sh.iter_rows():
             found = -1
             for cell in row:
+                is_col = False
+                if cell.fill and cell.fill.start_color:
+                    if cell.fill.start_color.type == 'rgb' and cell.fill.start_color.rgb not in ['00000000', 'FFFFFFFF', None]: is_col=True
+                    elif cell.fill.start_color.type == 'theme': is_col=True
                 val = str(cell.value).strip() if cell.value else ""
-                if '*' in val:
-                    if 'أ' in val: found=0
+                if (is_col and val) or ('*' in val):
+                    if 'أ' in val or 'ا' in val: found=0
                     elif 'ب' in val: found=1
                     elif 'ج' in val: found=2
                     elif 'د' in val: found=3
@@ -218,9 +241,6 @@ def get_master_pattern(file_obj, limit=30):
 
 def generate_exam(df, total):
     if df.empty: return pd.DataFrame()
-    # إذا لم نجد تصنيفات، نعتبر الكل مجموعة واحدة
-    if 'category' not in df.columns: df['category'] = 'General'
-    
     grp = df.groupby('category'); cats = list(grp.groups.keys())
     base = total // len(cats) if cats else 0; rem = total % len(cats) if cats else 0
     sel = []; random.shuffle(cats)
@@ -238,23 +258,23 @@ def generate_exam(df, total):
 #  🖥️ واجهة المستخدم
 # =========================================================
 
-st.title("📄 نظام توليد الاختبارات (الذكي)")
+st.title("🚀 نظام توليد الاختبارات (Enterprise Edition)")
+st.info("قم برفع بنوك الأسئلة، ثم حدد الإعدادات لكل نموذج. يدعم النظام آلاف الأسئلة.")
 
 col1, col2 = st.columns([1, 2])
 with col1:
     st.markdown("#### ⚙️ التحكم")
-    num_questions = st.number_input("عدد الأسئلة", min_value=5, value=30)
-    st.markdown("#### 📜 السجل")
+    num_questions = st.number_input("عدد الأسئلة في النموذج", min_value=5, value=30)
+    st.markdown("#### 📜 السجل الحي")
     log_box = st.empty()
     logs = []
     def log(msg):
         logs.append(f"{time.strftime('%H:%M:%S')} | {msg}")
-        log_box.markdown(f'<div class="log-box">{"<br>".join(logs[-10:])}</div>', unsafe_allow_html=True)
+        log_box.markdown(f'<div class="log-box">{"<br>".join(logs[-12:])}</div>', unsafe_allow_html=True)
 
 with col2:
-    st.markdown("#### 1️⃣ بنوك الأسئلة")
-    st.warning("⚠️ الملفات يجب أن تكون بصيغة .xlsx لقراءة الألوان بشكل صحيح.")
-    uploaded_banks = st.file_uploader("ارفع ملفات البنك", type=['xlsx'], accept_multiple_files=True)
+    st.markdown("#### 1️⃣ بنوك الأسئلة (Excel)")
+    uploaded_banks = st.file_uploader("ارفع ملفات (xls/xlsx)", type=['xls', 'xlsx'], accept_multiple_files=True)
 
 st.markdown("---")
 st.markdown("#### 2️⃣ إعدادات النماذج")
@@ -272,19 +292,19 @@ cols = st.columns(3)
 for i, m in enumerate(models_conf):
     with cols[i % 3]:
         with st.expander(f"📌 {m['name']}", expanded=True):
-            t = st.file_uploader("التمبلت", type=['docx'], key=f"t_{m['id']}")
-            k = st.file_uploader("المفتاح (*)", type=['xlsx'], key=f"k_{m['id']}")
+            t = st.file_uploader("التمبلت (Word)", type=['docx'], key=f"t_{m['id']}")
+            k = st.file_uploader("المفتاح (Excel ملون)", type=['xlsx'], key=f"k_{m['id']}")
             model_files[m['name']] = {"folder": m['folder'], "t": t, "k": k}
 
 st.markdown("---")
-if st.button("🚀 إنشاء وتحميل", use_container_width=True):
+if st.button("🚀 إنشاء وتحميل الملفات", use_container_width=True):
     if not uploaded_banks:
-        st.error("⚠️ المرجو رفع بنوك الأسئلة!")
+        st.error("⚠️ يرجى رفع بنوك الأسئلة!")
     else:
         try:
             log("بدء المعالجة...")
             all_dfs = []
-            bar = st.progress(0)
+            progress = st.progress(0)
             
             for i, f in enumerate(uploaded_banks):
                 log(f"قراءة: {f.name}")
@@ -293,26 +313,27 @@ if st.button("🚀 إنشاء وتحميل", use_container_width=True):
                     all_dfs.append(df)
                     log(f"✅ تم قراءة {len(df)} سؤال.")
                 else:
-                    log(f"⚠️ فشل قراءة الملف.")
-                bar.progress((i+1)/len(uploaded_banks))
+                    log(f"⚠️ تحذير: لم يتم استخراج أسئلة من {f.name}")
+                progress.progress((i + 1) / len(uploaded_banks))
             
             if not all_dfs:
-                st.error("❌ لم يتم استخراج أي أسئلة! تأكد أن الملفات .xlsx وبها ألوان.")
+                st.error("❌ لم يتم العثور على أي أسئلة صالحة! تأكد من وجود عمود 'سؤال' في الملفات.")
             else:
                 BIG_DF = pd.concat(all_dfs).reset_index(drop=True)
-                log(f"تم تجميع {len(BIG_DF)} سؤال.")
+                log(f"الإجمالي: {len(BIG_DF)} سؤال متاح.")
                 
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, "w") as zf:
                     for i, (m_name, conf) in enumerate(model_files.items()):
-                        log(f"بناء: {m_name}...")
+                        log(f"إنشاء: {m_name}...")
                         pattern = get_master_pattern(conf['k'], num_questions)
                         exam = generate_exam(BIG_DF, num_questions)
                         if len(exam) > num_questions: exam = exam.iloc[:num_questions]
                         exam = exam.reset_index(drop=True)
                         
                         doc = Document(conf['t']) if conf['t'] else Document()
-                        set_section_rtl(doc.sections[0]); doc.add_paragraph("")
+                        set_section_rtl(doc.sections[0])
+                        doc.add_paragraph("")
                         sub = doc.add_paragraph(); fix_paragraph(sub)
                         set_font(sub.add_run("اختر الإجابة الصحيحة :"), 14, True)
                         
@@ -324,7 +345,7 @@ if st.button("🚀 إنشاء وتحميل", use_container_width=True):
                         bio = io.BytesIO(); doc.save(bio)
                         zf.writestr(f"{conf['folder']}/{m_name}.docx", bio.getvalue())
                 
-                st.success("✅ تم الإنشاء بنجاح!")
+                st.success("✅ تم الانتهاء بنجاح!")
                 st.download_button("📥 تحميل ZIP", zip_buffer.getvalue(), "Exams_Pack.zip", "application/zip", use_container_width=True)
                 gc.collect()
         except Exception as e:
